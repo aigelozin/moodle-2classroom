@@ -4,3 +4,4 @@ out/
 *.mbz
 __pycache__/
 .venv/
+backups/
