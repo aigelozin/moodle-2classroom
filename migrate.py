@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Перенос курсов Moodle (.mbz) в Google Classroom.
+
+  python migrate.py plan  backups/*.mbz          # без Google: отчёт, что и как перенесётся
+  python migrate.py auth                          # один раз: вход в Google, сохраняется token.json
+  python migrate.py run   backups/*.mbz          # перенос (можно перезапускать — продолжит)
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import sys
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from convert import build_plan, plan_report  # noqa: E402
+from mbz_parser import cleanup, parse_mbz      # noqa: E402
+
+
+def state_path(out_dir: str, mbz: str) -> str:
+    h = hashlib.sha1(os.path.abspath(mbz).encode()).hexdigest()[:8]
+    base = os.path.splitext(os.path.basename(mbz))[0]
+    return os.path.join(out_dir, "state", f"{base}-{h}.json")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=["plan", "auth", "run"])
+    ap.add_argument("mbz", nargs="*", help=".mbz файлы")
+    ap.add_argument("--out", default="out", help="папка для отчётов и state (по умолчанию ./out)")
+    ap.add_argument("--credentials", default="credentials.json", help="OAuth-клиент (Desktop app)")
+    ap.add_argument("--token", default="token.json")
+    ap.add_argument("--port", type=int, default=8765, help="порт для OAuth-редиректа")
+    ap.add_argument("--skip-hidden", action="store_true", help="не переносить скрытое в Moodle")
+    ap.add_argument("--private-forms", action="store_true",
+                    help="не открывать тесты по ссылке для всех (доступ настроите сами)")
+    a = ap.parse_args()
+
+    os.makedirs(os.path.join(a.out, "state"), exist_ok=True)
+    os.makedirs(os.path.join(a.out, "reports"), exist_ok=True)
+
+    target = None
+    if a.command in ("auth", "run"):
+        from google_target import GoogleTarget, get_credentials
+        creds = get_credentials(a.credentials, a.token, a.port)
+        if a.command == "auth":
+            print(f"Готово, токен сохранён в {a.token}")
+            return
+        target = GoogleTarget(creds, publish_forms_to_anyone=not a.private_forms)
+
+    if not a.mbz:
+        ap.error("укажите .mbz файлы")
+
+    failed = []
+    for mbz in a.mbz:
+        print(f"\n=== {os.path.basename(mbz)}")
+        course = None
+        try:
+            course = parse_mbz(mbz)
+            plan = build_plan(course, include_hidden=not a.skip_hidden)
+            report = plan_report(plan)
+            rpath = os.path.join(a.out, "reports", os.path.splitext(os.path.basename(mbz))[0] + ".md")
+            with open(rpath, "w") as fh:
+                fh.write(report)
+            print(f"  {plan.name}: тем {len(plan.topics)}, "
+                  f"предупреждений {len(plan.warnings)}, пропущено {len(plan.skipped)} → {rpath}")
+            if target:
+                from google_target import State, run_plan
+                st = State(state_path(a.out, mbz))
+                cid = run_plan(plan, target, st)
+                print(f"  ✓ перенесено: https://classroom.google.com/c/{_alias(cid)}  (id {cid})")
+        except Exception as e:
+            failed.append(mbz)
+            print(f"  ✗ ошибка: {e}")
+            traceback.print_exc()
+        finally:
+            if course:
+                cleanup(course)
+
+    if failed:
+        print(f"\nС ошибками: {len(failed)} — запустите ту же команду ещё раз, перенос продолжится.")
+        sys.exit(1)
+
+
+def _alias(course_id: str) -> str:
+    # ссылка вида classroom.google.com/c/<base64 id>
+    import base64
+    return base64.b64encode(course_id.encode()).decode().rstrip("=")
+
+
+if __name__ == "__main__":
+    main()
