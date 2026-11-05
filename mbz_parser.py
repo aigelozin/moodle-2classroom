@@ -26,6 +26,7 @@ class _TextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.links: list[str] = []
+        self.media: list[str] = []
         self._skip = 0
 
     def handle_starttag(self, tag, attrs):
@@ -39,6 +40,10 @@ class _TextExtractor(HTMLParser):
             href = dict(attrs).get("href")
             if href and href.startswith("http"):
                 self.links.append(href)
+        if tag in ("source", "video", "audio", "iframe", "embed"):
+            src = dict(attrs).get("src")
+            if src and src.startswith("http"):
+                self.media.append(src)
         if tag == "img":
             alt = dict(attrs).get("alt") or ""
             self.parts.append(f"[изображение{': ' + alt if alt else ''}]")
@@ -67,11 +72,12 @@ def html_to_text(html: Optional[str]) -> str:
 
 
 def html_links(html: Optional[str]) -> list[str]:
+    """Встроенные видео/аудио (video/audio/source/iframe) первыми, затем обычные ссылки."""
     if not html:
         return []
     p = _TextExtractor()
     p.feed(html)
-    return p.links
+    return p.media + p.links
 
 
 # ---------------------------------------------------------------- model
@@ -304,7 +310,7 @@ def parse_mbz(mbz_path: str, workdir: Optional[str] = None) -> Course:
 
     # активности по директориям из moodle_backup.xml
     acts: dict[str, Activity] = {}
-    for a in mb.iter("activity"):
+    for a in mb.findall("information/contents/activities/activity"):
         d = _t(a, "directory")
         mod = _t(a, "modulename")
         cmid = _t(a, "moduleid")
@@ -364,7 +370,7 @@ def parse_mbz(mbz_path: str, workdir: Optional[str] = None) -> Course:
 
     # секции в порядке номера, активности в порядке sequence
     sections: list[Section] = []
-    for s in mb.iter("section"):
+    for s in mb.findall("information/contents/sections/section"):
         d = _t(s, "directory")
         sxml = os.path.join(root_dir, d, "section.xml")
         if not os.path.exists(sxml):

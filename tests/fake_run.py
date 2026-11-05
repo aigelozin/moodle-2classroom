@@ -15,7 +15,7 @@ class Fake(gt.GoogleTarget):
     def upload_file(self, path, name, mime, folder):
         assert os.path.exists(path); calls.append(("upload", name, mime)); return self._id("file")
     def html_to_doc(self, html, name, folder):
-        assert "data:image/png;base64," in html and "@@PLUGINFILE@@" not in html
+        assert "@@PLUGINFILE@@" not in html and "<video" not in html.lower()
         calls.append(("doc", name)); return self._id("doc")
     def create_form(self, spec, folder):
         for r in spec.requests:

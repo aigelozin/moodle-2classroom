@@ -189,11 +189,14 @@ def quiz_to_form(act: Activity) -> FormSpec:
     items: list[dict] = []
     last_page = None
     total = 0
+    real = [s for s in act.quiz_slots if s.question is not None]
+    # «один вопрос на страницу» в Forms неудобен — тогда делаем тест одной страницей
+    split_pages = len({s.page for s in real}) < len(real)
     for s in act.quiz_slots:
         if s.question is None:
             warn.append(f"Слот {s.slot}: {s.note}")
             continue
-        if last_page is not None and s.page != last_page:
+        if split_pages and last_page is not None and s.page != last_page:
             items.append({"title": f"Страница {s.page}", "pageBreakItem": {}})
         last_page = s.page
         pts = 0 if s.question.qtype == "description" else max(1, round(s.maxmark))
@@ -237,17 +240,42 @@ def inline_images(html: str, files: list[MFile]) -> tuple[str, list[MFile]]:
     return html, other
 
 
+_MEDIA_RE = re.compile(r"<(video|audio)\b.*?</\1>|<(iframe|embed)\b[^>]*?(?:/>|>.*?</\2>|>)",
+                       re.S | re.I)
+_SRC_RE = re.compile(r'src="(https?://[^"]+)"', re.I)
+
+
+def media_to_links(html: str) -> str:
+    """Google Docs не воспроизводит video/audio/iframe — заменяем их видимыми ссылками."""
+    def repl(m):
+        block = m.group(0)
+        kind = (m.group(1) or m.group(2) or "").lower()
+        label = "Аудио" if kind == "audio" else "Видео"
+        srcs = list(dict.fromkeys(_SRC_RE.findall(block)))
+        if not srcs:
+            return ""
+        return "".join(f'<p>▶ {label}: <a href="{u}">{u}</a></p>' for u in srcs)
+    return _MEDIA_RE.sub(repl, html)
+
+
 def _wrap_html(title: str, body: str) -> str:
     return (f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title></head>"
             f"<body>{body}</body></html>")
 
 
 def _link_attachments(html: str) -> list[Attachment]:
-    out = []
-    for url in dict.fromkeys(html_links(html)):
+    out, seen = [], set()
+    for url in html_links(html):
         vid = youtube_id(url)
+        key = ("yt", vid) if vid else ("url", url.rstrip("/"))
+        if key in seen:
+            continue
+        seen.add(key)
         out.append(Attachment("youtube", video_id=vid, url=url) if vid else Attachment("link", url=url))
     return out[:20]
+
+
+DEFAULT_SECTION_RE = re.compile(r"^\s*(topic|тема|section|раздел|week|неделя)?\s*\d*\s*$", re.I)
 
 
 # ---------------------------------------------------------------- course -> plan
@@ -260,7 +288,21 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
     warnings = list(course.warnings)
 
     for sec in course.sections:
-        tname = sec.name or ("Общее" if sec.number == 0 else f"Тема {sec.number}")
+        tname = sec.name
+        acts = list(sec.activities)
+        if DEFAULT_SECTION_RE.match(tname or ""):
+            # «Topic 5» и т.п.: если раздел начинается с короткой метки-заголовка — берём её как название темы
+            first = acts[0] if acts else None
+            ftext = html_to_text(first.intro_html) if first and first.modname == "label" else ""
+            fline = ftext.split("\n")[0].strip() if ftext else ""
+            if fline and len(fline) <= MAX_TOPIC and not fline.startswith("["):
+                tname = fline
+                if "\n" not in ftext and not first.intro_files and not html_links(first.intro_html):
+                    acts = acts[1:]   # метка — только заголовок, отдельным материалом не нужна
+            elif sec.number == 0:
+                tname = "Общее"
+            else:
+                tname = f"Тема {sec.number}"
         topic = TopicPlan(key=f"section:{sec.id}", name=one_line(tname, MAX_TOPIC))
         sec_text = html_to_text(sec.summary_html)
         if sec_text and sec.number != 0:
@@ -268,7 +310,7 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
                                     title=one_line(f"О разделе: {tname}", MAX_TITLE),
                                     description=sec_text[:MAX_DESC], draft=not sec.visible,
                                     source="section"))
-        for act in sec.activities:
+        for act in acts:
             if act.modname not in SUPPORTED:
                 skipped.append(f"[{tname}] {act.modname}: «{act.name}» — тип не переносится")
                 continue
@@ -281,7 +323,7 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
                         description=intro[:MAX_DESC], draft=hidden, source=act.modname)
 
             if act.modname in ("page", "book"):
-                html, other = inline_images(act.content_html, act.content_files)
+                html, other = inline_images(media_to_links(act.content_html), act.content_files)
                 item.attachments.append(Attachment("html_doc", title=act.name,
                                                    html=_wrap_html(act.name, html)))
                 item.attachments += [Attachment("drive_file", file=f) for f in other]
@@ -298,7 +340,11 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
                 text = html_to_text(act.intro_html)
                 if not text and not act.intro_files:
                     continue
-                item.title = one_line(text.split("\n")[0] if text else "Материал", MAX_TITLE)
+                lines = [l for l in text.split("\n") if l.strip()]
+                # если первая строка уже стала названием темы — заголовок материала берём со второй
+                if lines and lines[0].strip() == tname and len(lines) > 1:
+                    lines = lines[1:]
+                item.title = one_line(lines[0] if lines else "Материал", MAX_TITLE)
                 item.description = text[:MAX_DESC]
                 item.attachments += _link_attachments(act.intro_html)
             elif act.modname == "quiz":
@@ -307,9 +353,9 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
                 item.kind = "assignment"
                 item.max_points = spec.total_points
                 item.attachments.append(Attachment("form", title=act.name, form=spec))
-            # файлы, вложенные в описание
+            # файлы, вложенные в описание (у меток — и картинки: Classroom не показывает их в тексте)
             item.attachments += [Attachment("drive_file", file=f) for f in act.intro_files
-                                 if not f.mimetype.startswith("image/")]
+                                 if act.modname == "label" or not f.mimetype.startswith("image/")]
             if len(item.attachments) > 20:
                 warnings.append(f"«{act.name}»: {len(item.attachments)} вложений, Classroom допускает 20 — "
                                 f"лишние будут в отдельных материалах")
