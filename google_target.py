@@ -24,7 +24,7 @@ SCOPES = [
 ROOT_FOLDER = "Moodle → Classroom"
 
 
-def get_credentials(credentials_file: str, token_file: str, port: int = 8765):
+def get_credentials(credentials_file: str, token_file: str, port: int = 8765, manual: bool = False):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -37,10 +37,26 @@ def get_credentials(credentials_file: str, token_file: str, port: int = 8765):
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     else:
+        if not os.path.exists(credentials_file):
+            raise SystemExit(f"Нет {credentials_file} — скачайте OAuth-клиент (Desktop app) из Google Cloud, см. README")
         flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-        print(f"\nОткройте ссылку ниже в браузере. Если скрипт на удалённом сервере — "
-              f"сначала пробросьте порт:\n  ssh -L {port}:localhost:{port} user@server\n")
-        creds = flow.run_local_server(port=port, open_browser=False)
+        if manual:
+            # сервер без браузера и без SSH-туннеля: пользователь копирует адрес из браузера
+            os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # редирект на http://localhost
+            flow.redirect_uri = f"http://localhost:{port}/"
+            url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+            print("\n1) Откройте ссылку в браузере на любом устройстве и войдите в Google:\n")
+            print(url)
+            print("\n2) После «Разрешить» браузер покажет ошибку «не удаётся открыть localhost» — это нормально.")
+            print("   Скопируйте ПОЛНЫЙ адрес из адресной строки (начинается с http://localhost) и вставьте сюда.\n")
+            redirect = input("Адрес: ").strip()
+            flow.fetch_token(authorization_response=redirect)
+            creds = flow.credentials
+        else:
+            print(f"\nОткройте ссылку ниже в браузере. Если скрипт на удалённом сервере — "
+                  f"сначала пробросьте порт:\n  ssh -L {port}:localhost:{port} user@server\n"
+                  f"или используйте: python migrate.py auth --manual\n")
+            creds = flow.run_local_server(port=port, open_browser=False)
     with open(token_file, "w") as fh:
         fh.write(creds.to_json())
     os.chmod(token_file, 0o600)

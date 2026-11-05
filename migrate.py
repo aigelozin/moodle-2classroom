@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--credentials", default="credentials.json", help="OAuth-клиент (Desktop app)")
     ap.add_argument("--token", default="token.json")
     ap.add_argument("--port", type=int, default=8765, help="порт для OAuth-редиректа")
+    ap.add_argument("--manual", action="store_true",
+                    help="вход без браузера на сервере: вставить адрес из браузера вручную")
     ap.add_argument("--skip-hidden", action="store_true", help="не переносить скрытое в Moodle")
     ap.add_argument("--private-forms", action="store_true",
                     help="не открывать тесты по ссылке для всех (доступ настроите сами)")
@@ -44,7 +46,7 @@ def main():
     target = None
     if a.command in ("auth", "run"):
         from google_target import GoogleTarget, get_credentials
-        creds = get_credentials(a.credentials, a.token, a.port)
+        creds = get_credentials(a.credentials, a.token, a.port, manual=a.manual)
         if a.command == "auth":
             print(f"Готово, токен сохранён в {a.token}")
             return
