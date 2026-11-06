@@ -35,6 +35,8 @@ def main():
     ap.add_argument("--port", type=int, default=8765, help="порт для OAuth-редиректа")
     ap.add_argument("--manual", action="store_true",
                     help="вход без браузера на сервере: вставить адрес из браузера вручную")
+    ap.add_argument("--course", help="перенести в уже созданный курс: ссылка classroom.google.com/c/... или id "
+                                     "(только вместе с одним .mbz)")
     ap.add_argument("--skip-hidden", action="store_true", help="не переносить скрытое в Moodle")
     ap.add_argument("--private-forms", action="store_true",
                     help="не открывать тесты по ссылке для всех (доступ настроите сами)")
@@ -54,6 +56,8 @@ def main():
 
     if not a.mbz:
         ap.error("укажите .mbz файлы")
+    if a.course and len(a.mbz) != 1:
+        ap.error("--course можно указать только для одного .mbz")
 
     missing = [p for p in a.mbz if not os.path.isfile(p)]
     if missing:
@@ -86,7 +90,7 @@ def main():
             if target:
                 from google_target import State, run_plan
                 st = State(state_path(a.out, mbz))
-                cid = run_plan(plan, target, st)
+                cid = run_plan(plan, target, st, existing_course=a.course)
                 print(f"  ✓ перенесено: https://classroom.google.com/c/{_alias(cid)}  (id {cid})")
         except Exception as e:
             failed.append(mbz)

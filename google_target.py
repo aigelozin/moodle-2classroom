@@ -156,15 +156,37 @@ class GoogleTarget:
 
     # ------------------------------------------------------------ classroom
     def create_course(self, plan: CoursePlan) -> str:
-        body = {"name": plan.name, "section": plan.section, "description": plan.description,
-                "ownerId": "me", "courseState": "ACTIVE"}
-        try:
-            return _retry(self.classroom.courses().create(body=body), "курс")["id"]
-        except Exception as e:  # некоторым аккаунтам ACTIVE сразу не разрешён
-            if "courseState" not in str(e) and "PERMISSION" not in str(e).upper():
-                raise
-            body["courseState"] = "PROVISIONED"
-            return _retry(self.classroom.courses().create(body=body), "курс")["id"]
+        """Создаёт курс. Личным Gmail Google часто не разрешает сразу ACTIVE —
+        тогда пробуем PROVISIONED и без явного состояния."""
+        from googleapiclient.errors import HttpError
+        base = {"name": plan.name, "section": plan.section, "description": plan.description,
+                "ownerId": "me"}
+        last = None
+        for state in ("ACTIVE", "PROVISIONED", None):
+            body = dict(base)
+            if state:
+                body["courseState"] = state
+            try:
+                cid = _retry(self.classroom.courses().create(body=body), "курс")["id"]
+                if state != "ACTIVE":
+                    print("  ! Курс создан неактивным: откройте classroom.google.com и нажмите «Принять» "
+                          "на карточке курса (сделайте это после переноса).")
+                return cid
+            except HttpError as e:
+                last = e
+                if "coursestatedenied" not in str(e).lower():
+                    raise
+        raise SystemExit(
+            "Google не разрешает этому аккаунту создавать курсы через API (CourseStateDenied).\n"
+            "Что сделать:\n"
+            "  1) Откройте https://classroom.google.com этим же Gmail, выберите роль «Я преподаватель».\n"
+            "  2) Нажмите «+» → «Создать курс», назовите его как курс Moodle.\n"
+            "  3) Скопируйте адрес курса из браузера и запустите перенос в него:\n"
+            "     python migrate.py run backups/<бэкап>.mbz --course \"https://classroom.google.com/c/...\"\n"
+            f"Ответ Google: {last}")
+
+    def check_course(self, course_id: str) -> dict:
+        return _retry(self.classroom.courses().get(id=course_id), "курс")
 
     def create_topic(self, course_id: str, name: str) -> str:
         return _retry(self.classroom.courses().topics().create(courseId=course_id, body={"name": name}),
@@ -207,11 +229,35 @@ def _material(att: Attachment, target: GoogleTarget, folder: str, state: State, 
     return None
 
 
-def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print):
+def parse_course_ref(ref: str) -> str:
+    """Принимает id курса или ссылку https://classroom.google.com/c/<base64-id>."""
+    import base64
+    import re
+    ref = ref.strip()
+    m = re.search(r"/c/([A-Za-z0-9_-]+)", ref)
+    if not m:
+        return ref
+    alias = m.group(1)
+    try:
+        dec = base64.urlsafe_b64decode(alias + "=" * (-len(alias) % 4)).decode()
+        if dec.isdigit():
+            return dec
+    except Exception:
+        pass
+    return alias
+
+
+def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
+             existing_course: str | None = None):
     root = target.ensure_folder(ROOT_FOLDER, None, state, "drive:root")
     folder = target.ensure_folder(plan.name[:200], root, state, "drive:course")
 
     course_id = state.get("course_id")
+    if existing_course and not course_id:
+        course_id = parse_course_ref(existing_course)
+        info = target.check_course(course_id)
+        log(f"  перенос в существующий курс «{info.get('name')}» ({course_id})")
+        state.set("course_id", course_id)
     if not course_id:
         course_id = target.create_course(plan)
         state.set("course_id", course_id)

@@ -202,7 +202,8 @@ python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
 | `invalid_grant`, `Token has been expired or revoked` | `rm token.json && python migrate.py auth --manual` |
 | `Mismatching state` / `Missing code` при вставке адреса | Скопирован не весь адрес — начните `auth --manual` заново и скопируйте адрес целиком |
 | `HTTP 429` или `Quota exceeded` | Скрипт сам повторяет запросы; если всё равно упал — подождите час и запустите `run` снова |
-| `HTTP 403 ... @ClassroomApiDisabled` или запрет на создание курсов | Откройте https://classroom.google.com этим Gmail, выберите роль «Я преподаватель», затем повторите |
+| `HTTP 403 ... @ClassroomApiDisabled` | Откройте https://classroom.google.com этим Gmail, выберите роль «Я преподаватель», затем повторите |
+| `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
 | `ModuleNotFoundError: googleapiclient` | Не включено окружение: `. .venv/bin/activate` |
 | `Ошибка ... .xml` при `plan` | Бэкап повреждён или неполный — сделайте его в Moodle заново |
 
