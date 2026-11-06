@@ -135,6 +135,8 @@ def write_courses_index(out_dir: str) -> str:
                   "неизвестно (старая версия) — запустите run ещё раз, дублей не будет")
         folder = st.get("drive:course")
         drive = f"[папка](https://drive.google.com/drive/folders/{folder})" if folder else "—"
+        if st.get("problems"):
+            status += f"; замечаний: {len(st['problems'])}"
         rows.append(f"| {name.replace('|', '/')} | [открыть](https://classroom.google.com/c/{_alias(cid)}) "
                     f"| {drive} | {status} | `{os.path.basename(f)}` |")
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -145,6 +147,17 @@ def write_courses_index(out_dir: str) -> str:
         "|---|---|---|---|---|",
         *rows, "",
     ]) if rows else "# Курсы, перенесённые в Google Classroom\n\nПока нет ни одного курса.\n"
+    notes = []
+    for f in sorted(glob.glob(os.path.join(out_dir, "state", "*.json"))):
+        try:
+            st = json.load(open(f))
+        except Exception:
+            continue
+        if st.get("problems"):
+            notes += ["", f"## Замечания: {st.get('course_name', os.path.basename(f))}", "",
+                      *[f"- {p}" for p in st["problems"]]]
+    if notes:
+        text += "\n".join(notes) + "\n"
     path = os.path.join(out_dir, "courses.md")
     with open(path, "w") as fh:
         fh.write(text)

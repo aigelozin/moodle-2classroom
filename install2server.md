@@ -210,6 +210,8 @@ python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
 | `HTTP 429` или `Quota exceeded` | Скрипт сам повторяет запросы; если всё равно упал — подождите час и запустите `run` снова |
 | `HTTP 403 ... @ClassroomApiDisabled` | Откройте https://classroom.google.com этим Gmail, выберите роль «Я преподаватель», затем повторите |
 | `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
+| `! Classroom отклонил «…» — ищу проблемное вложение` | Не ошибка: скрипт сам найдёт вложение, которое Google не принимает (часто — недоступное или приватное видео), и вставит его ссылкой в текст материала. Список таких мест — в `out/courses.md`, раздел «Замечания» |
+| `✗ «…»: … — пропущен` | Элемент не создался, остальные перенесены. Запустите `run` ещё раз; если повторяется — пришлите строку разработчику |
 | `ModuleNotFoundError: googleapiclient` | Не включено окружение: `. .venv/bin/activate` |
 | `Ошибка ... .xml` при `plan` | Бэкап повреждён или неполный — сделайте его в Moodle заново |
 

@@ -192,11 +192,13 @@ class GoogleTarget:
         return _retry(self.classroom.courses().topics().create(courseId=course_id, body={"name": name}),
                       "тема")["topicId"]
 
-    def create_item(self, course_id: str, topic_id: str, item: Item, materials: list[dict]) -> str:
+    def create_item(self, course_id: str, topic_id: str, item: Item, materials: list[dict],
+                    description: str | None = None, force_draft: bool = False) -> str:
         body = {"title": item.title, "topicId": topic_id,
-                "state": "DRAFT" if item.draft else "PUBLISHED"}
-        if item.description:
-            body["description"] = item.description
+                "state": "DRAFT" if (item.draft or force_draft) else "PUBLISHED"}
+        desc = item.description if description is None else description
+        if desc:
+            body["description"] = desc[:30000]
         if materials:
             body["materials"] = materials
         if item.kind == "assignment":
@@ -205,6 +207,13 @@ class GoogleTarget:
         else:
             r = self.classroom.courses().courseWorkMaterials().create(courseId=course_id, body=body)
         return _retry(r, f"элемент «{item.title[:40]}»")["id"]
+
+    def delete_item(self, course_id: str, item: Item, item_id: str):
+        if item.kind == "assignment":
+            r = self.classroom.courses().courseWork().delete(courseId=course_id, id=item_id)
+        else:
+            r = self.classroom.courses().courseWorkMaterials().delete(courseId=course_id, id=item_id)
+        _retry(r, "удаление пробного элемента")
 
 
 def _material(att: Attachment, target: GoogleTarget, folder: str, state: State, key: str) -> dict | None:
@@ -247,6 +256,77 @@ def parse_course_ref(ref: str) -> str:
     return alias
 
 
+def _material_text(m: dict) -> str:
+    """Текстовое представление вложения — для описания, если Classroom его не принял."""
+    if "link" in m:
+        return m["link"]["url"]
+    if "youtubeVideo" in m:
+        return f"https://youtu.be/{m['youtubeVideo']['id']}"
+    if "driveFile" in m:
+        return f"https://drive.google.com/file/d/{m['driveFile']['driveFile']['id']}/view"
+    return str(m)
+
+
+def _is_rejection(e) -> bool:
+    status = getattr(getattr(e, "resp", None), "status", 0)
+    return status in (400, 403, 404)
+
+
+def create_item_safely(target: GoogleTarget, course_id: str, topic_id: str, item: Item,
+                       materials: list[dict], log=print) -> tuple[str, list[str]]:
+    """Создаёт элемент. Если Classroom отклоняет запрос, находит виноватые вложения
+    (пробными черновиками, которые сразу удаляются) и переносит их ссылками в описание.
+    Возвращает (id элемента, список проблем)."""
+    from googleapiclient.errors import HttpError
+    try:
+        return target.create_item(course_id, topic_id, item, materials), []
+    except HttpError as e:
+        if not _is_rejection(e):
+            raise
+        first_error = e
+    log(f"    ! Classroom отклонил «{item.title[:60]}»: {_short(first_error)} — ищу проблемное вложение")
+
+    good, bad = [], []
+    for m in materials:
+        try:
+            probe = Item(key="probe", kind=item.kind, title=f"[проверка] {item.title}"[:300],
+                         description="", draft=True, max_points=item.max_points)
+            pid = target.create_item(course_id, topic_id, probe, [m], force_draft=True)
+            try:
+                target.delete_item(course_id, probe, pid)
+            except HttpError:
+                pass
+            good.append(m)
+        except HttpError as e:
+            if not _is_rejection(e):
+                raise
+            bad.append((m, e))
+
+    problems = [f"вложение {_material_text(m)} не принято Classroom ({_short(e)})" for m, e in bad]
+    desc = item.description or ""
+    if bad:
+        desc += "\n\nДополнительные ссылки:\n" + "\n".join(_material_text(m) for m, _ in bad)
+    try:
+        iid = target.create_item(course_id, topic_id, item, good, description=desc.strip())
+    except HttpError as e:
+        if not _is_rejection(e):
+            raise
+        # не помогло даже без вложений — создаём черновиком, чтобы преподаватель поправил вручную
+        iid = target.create_item(course_id, topic_id, item, good, description=desc.strip(), force_draft=True)
+        problems.append(f"создан черновиком: Classroom не принял опубликованный вариант ({_short(e)})")
+    for p in problems:
+        log(f"      → {p}")
+    return iid, problems
+
+
+def _short(e) -> str:
+    try:
+        import json as _j
+        return _j.loads(e.content.decode())["error"]["message"][:200]
+    except Exception:
+        return str(e)[:200]
+
+
 def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
              existing_course: str | None = None):
     root = target.ensure_folder(ROOT_FOLDER, None, state, "drive:root")
@@ -268,6 +348,7 @@ def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
 
     # Classroom показывает новые темы и элементы сверху, поэтому создаём в обратном порядке,
     # чтобы порядок совпал с Moodle.
+    failed: list[str] = []
     for topic in reversed(plan.topics):
         tkey = f"topic:{topic.key}"
         topic_id = state.get(tkey)
@@ -293,7 +374,20 @@ def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
                 part = item if ci == 0 else Item(key=ck, kind="material",
                                                  title=f"{item.title} (часть {ci + 1})"[:300],
                                                  description="", draft=item.draft)
-                state.set(ck, target.create_item(course_id, topic_id, part, chunk))
-            log(f"    + {item.source}: {item.title}")
-    state.set("done", True)
+                try:
+                    iid, probs = create_item_safely(target, course_id, topic_id, part, chunk, log)
+                except Exception as e:  # не останавливаем весь курс из-за одного элемента
+                    failed.append(f"«{item.title}» ({topic.name}): {_short(e)}")
+                    log(f"    ✗ «{item.title}»: {_short(e)} — пропущен, будет повторён при следующем запуске")
+                    break
+                state.set(ck, iid)
+                if probs:
+                    problems = state.get("problems", [])
+                    problems += [f"«{item.title}» ({topic.name}): {p}" for p in probs]
+                    state.set("problems", problems)
+            else:
+                log(f"    + {item.source}: {item.title}")
+    state.set("done", not failed)
+    if failed:
+        raise RuntimeError(f"не перенесено элементов: {len(failed)}\n  " + "\n  ".join(failed))
     return course_id
