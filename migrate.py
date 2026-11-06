@@ -55,6 +55,21 @@ def main():
     if not a.mbz:
         ap.error("укажите .mbz файлы")
 
+    missing = [p for p in a.mbz if not os.path.isfile(p)]
+    if missing:
+        import glob
+        print("Файл не найден: " + ", ".join(missing))
+        found = sorted(glob.glob("*.mbz") + glob.glob("backups/*.mbz") + glob.glob(os.path.expanduser("~/*.mbz"))
+                       + glob.glob(os.path.expanduser("~/Загрузки/*.mbz")) + glob.glob(os.path.expanduser("~/Downloads/*.mbz")))
+        if found:
+            print("Найденные бэкапы:\n  " + "\n  ".join(found))
+            print("Укажите путь к одному из них, например:\n"
+                  f"  python migrate.py {a.command} \"{found[0]}\"")
+        else:
+            print("Бэкапов .mbz не найдено ни здесь, ни в backups/, ни в ~/Загрузки. "
+                  "Найти: find ~ -name '*.mbz'")
+        sys.exit(2)
+
     failed = []
     for mbz in a.mbz:
         print(f"\n=== {os.path.basename(mbz)}")
