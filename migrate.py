@@ -4,6 +4,7 @@
   python migrate.py plan  backups/*.mbz          # без Google: отчёт, что и как перенесётся
   python migrate.py auth                          # один раз: вход в Google, сохраняется token.json
   python migrate.py run   backups/*.mbz          # перенос (можно перезапускать — продолжит)
+  python migrate.py list                          # ссылки на перенесённые курсы (out/courses.md)
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def state_path(out_dir: str, mbz: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["plan", "auth", "run"])
+    ap.add_argument("command", choices=["plan", "auth", "run", "list"])
     ap.add_argument("mbz", nargs="*", help=".mbz файлы")
     ap.add_argument("--out", default="out", help="папка для отчётов и state (по умолчанию ./out)")
     ap.add_argument("--credentials", default="credentials.json", help="OAuth-клиент (Desktop app)")
@@ -44,6 +45,11 @@ def main():
 
     os.makedirs(os.path.join(a.out, "state"), exist_ok=True)
     os.makedirs(os.path.join(a.out, "reports"), exist_ok=True)
+
+    if a.command == "list":
+        path = write_courses_index(a.out)
+        print(open(path).read())
+        return
 
     target = None
     if a.command in ("auth", "run"):
@@ -100,9 +106,49 @@ def main():
             if course:
                 cleanup(course)
 
+    if target:
+        print(f"\nСсылки на курсы: {write_courses_index(a.out)}")
+
     if failed:
         print(f"\nС ошибками: {len(failed)} — запустите ту же команду ещё раз, перенос продолжится.")
         sys.exit(1)
+
+
+def write_courses_index(out_dir: str) -> str:
+    """Собирает out/courses.md из всех state-файлов: курс, ссылка в Classroom, папка в Drive."""
+    import datetime
+    import glob
+    import json
+    rows = []
+    for f in sorted(glob.glob(os.path.join(out_dir, "state", "*.json"))):
+        try:
+            st = json.load(open(f))
+        except Exception:
+            continue
+        cid = st.get("course_id")
+        if not cid:
+            continue
+        name = st.get("course_name") or os.path.basename(f).rsplit("-", 1)[0]
+        done = st.get("done")
+        status = ("✓ перенесён" if done else
+                  "не завершён — запустите run ещё раз" if done is False else
+                  "неизвестно (старая версия) — запустите run ещё раз, дублей не будет")
+        folder = st.get("drive:course")
+        drive = f"[папка](https://drive.google.com/drive/folders/{folder})" if folder else "—"
+        rows.append(f"| {name.replace('|', '/')} | [открыть](https://classroom.google.com/c/{_alias(cid)}) "
+                    f"| {drive} | {status} | `{os.path.basename(f)}` |")
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    text = "\n".join([
+        "# Курсы, перенесённые в Google Classroom", "",
+        f"Обновлено: {now}", "",
+        "| Курс | Classroom | Google Drive | Статус | State-файл |",
+        "|---|---|---|---|---|",
+        *rows, "",
+    ]) if rows else "# Курсы, перенесённые в Google Classroom\n\nПока нет ни одного курса.\n"
+    path = os.path.join(out_dir, "courses.md")
+    with open(path, "w") as fh:
+        fh.write(text)
+    return path
 
 
 def _alias(course_id: str) -> str:

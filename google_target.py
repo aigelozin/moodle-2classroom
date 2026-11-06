@@ -252,6 +252,9 @@ def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
     root = target.ensure_folder(ROOT_FOLDER, None, state, "drive:root")
     folder = target.ensure_folder(plan.name[:200], root, state, "drive:course")
 
+    state.set("course_name", plan.name)
+    if state.get("done") is None:
+        state.set("done", False)
     course_id = state.get("course_id")
     if existing_course and not course_id:
         course_id = parse_course_ref(existing_course)
@@ -292,4 +295,5 @@ def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
                                                  description="", draft=item.draft)
                 state.set(ck, target.create_item(course_id, topic_id, part, chunk))
             log(f"    + {item.source}: {item.title}")
+    state.set("done", True)
     return course_id

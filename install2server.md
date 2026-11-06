@@ -162,7 +162,13 @@ python migrate.py run backups/курс_110.mbz 2>&1 | tee -a out/run.log
 
 ## Шаг 10. Проверить результат
 
-1. Откройте ссылку из вывода или https://classroom.google.com.
+Ссылки на все перенесённые курсы записываются в `out/courses.md`:
+
+```bash
+python migrate.py list
+```
+
+1. Откройте ссылку из `out/courses.md` или https://classroom.google.com.
 2. «Задания» (Classwork): темы и порядок должны совпадать с Moodle.
 3. Откройте 2–3 материала: Google Doc страницы, видео, файлы.
 4. Откройте один тест и пройдите его в режиме предпросмотра (значок глаза в форме).
