@@ -63,8 +63,24 @@ def get_credentials(credentials_file: str, token_file: str, port: int = 8765, ma
     return creds
 
 
+HTTP_TIMEOUT = 300  # с; большие страницы Google Docs конвертирует дольше стандартных 60 с
+
+
+def _network_errors():
+    import socket
+    import ssl
+    errs = [TimeoutError, socket.timeout, socket.gaierror, ConnectionError, ssl.SSLError]
+    try:
+        import httplib2
+        errs.append(httplib2.HttpLib2Error)
+    except ImportError:
+        pass
+    return tuple(errs)
+
+
 def _retry(call, what: str, tries: int = 6):
     from googleapiclient.errors import HttpError
+    net = _network_errors()
     for attempt in range(tries):
         try:
             return call.execute()
@@ -76,6 +92,20 @@ def _retry(call, what: str, tries: int = 6):
                 time.sleep(delay)
                 continue
             raise
+        except net as e:
+            # таймаут или обрыв сети: Google мог не успеть ответить — повторяем
+            if attempt < tries - 1:
+                delay = min(60, 5 * 2 ** attempt + random.random())
+                print(f"    … {what}: {type(e).__name__} (сеть/таймаут), повтор через {delay:.0f} с")
+                time.sleep(delay)
+                continue
+            raise
+
+
+def _authorized_http(creds):
+    import google_auth_httplib2
+    import httplib2
+    return google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
 
 
 class State:
@@ -97,9 +127,9 @@ class State:
 class GoogleTarget:
     def __init__(self, creds, publish_forms_to_anyone: bool = True):
         from googleapiclient.discovery import build
-        self.classroom = build("classroom", "v1", credentials=creds, cache_discovery=False)
-        self.drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-        self.forms = build("forms", "v1", credentials=creds, cache_discovery=False)
+        self.classroom = build("classroom", "v1", http=_authorized_http(creds), cache_discovery=False)
+        self.drive = build("drive", "v3", http=_authorized_http(creds), cache_discovery=False)
+        self.forms = build("forms", "v1", http=_authorized_http(creds), cache_discovery=False)
         self.publish_anyone = publish_forms_to_anyone
 
     # ------------------------------------------------------------ drive
