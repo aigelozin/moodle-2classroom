@@ -32,6 +32,19 @@ def one_line(s: str, limit: int) -> str:
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
+_DOMAIN = (r"(?:https?://\S+|www\.\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|ru|org|net|info|io|ua|by|kz|su|"
+           r"edu|me|online|club|site|рф)\b\S*)")
+
+
+def strip_urls(s: str) -> str:
+    """Classroom не принимает ссылки и адреса сайтов в названии курса (@CourseTitleCannotContainUrl).
+    Убираем скобки с адресом целиком («(перенесен на site.com 2023)»), затем оставшиеся адреса."""
+    s = re.sub(r"\([^()]*" + _DOMAIN + r"[^()]*\)", " ", s or "", flags=re.I)
+    s = re.sub(_DOMAIN, " ", s, flags=re.I)
+    s = re.sub(r"\s+([.,;:])", r"\1", s)
+    return re.sub(r"\s+", " ", s).strip(" -–—:")
+
+
 # ---------------------------------------------------------------- plan model
 @dataclass
 class Attachment:
@@ -364,8 +377,8 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
             topics.append(topic)
 
     return CoursePlan(
-        name=one_line(course.fullname, 750),
-        section=one_line(course.shortname, 2800),
+        name=one_line(strip_urls(course.fullname) or course.shortname, 750),
+        section=one_line(strip_urls(course.shortname), 2800),
         description=html_to_text(course.summary_html)[:30000],
         topics=topics, skipped=skipped, warnings=warnings,
     )
