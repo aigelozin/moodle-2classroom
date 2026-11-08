@@ -14,7 +14,21 @@ import os
 import sys
 import traceback
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+
+def _use_project_venv():
+    """Если запущено системным python3, а рядом есть .venv — перезапускаемся из .venv,
+    чтобы не нужно было помнить про `. .venv/bin/activate`."""
+    venv_py = os.path.join(HERE, ".venv", "bin", "python")
+    if os.path.exists(venv_py) and os.path.realpath(sys.prefix) != os.path.realpath(os.path.join(HERE, ".venv")) \
+            and not os.environ.get("M2C_NO_VENV_SWITCH"):
+        os.environ["M2C_NO_VENV_SWITCH"] = "1"
+        os.execv(venv_py, [venv_py, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+_use_project_venv()
 
 from convert import build_plan, plan_report  # noqa: E402
 from mbz_parser import cleanup, parse_mbz      # noqa: E402

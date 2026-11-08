@@ -46,8 +46,10 @@ python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-После каждого нового входа на сервер окружение нужно включать заново:
-`cd ~/moodle-2classroom && . .venv/bin/activate`.
+Включать окружение (`. .venv/bin/activate`) не обязательно: `python3 migrate.py ...`
+сам переключится на `.venv`, если она есть в папке проекта.
+
+В Ubuntu команды `python` может не быть — используйте `python3`.
 
 ## Шаг 4. Проверить, что всё работает (без Google)
 
@@ -212,7 +214,8 @@ python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
 | `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
 | `! Classroom отклонил «…» — ищу проблемное вложение` | Не ошибка: скрипт сам найдёт вложение, которое Google не принимает (часто — недоступное или приватное видео), и вставит его ссылкой в текст материала. Список таких мест — в `out/courses.md`, раздел «Замечания» |
 | `✗ «…»: … — пропущен` | Элемент не создался, остальные перенесены. Запустите `run` ещё раз; если повторяется — пришлите строку разработчику |
-| `ModuleNotFoundError: googleapiclient` | Не включено окружение: `. .venv/bin/activate` |
+| `ModuleNotFoundError: No module named 'google'` / `googleapiclient` | Не установлены зависимости: `cd ~/moodle-2classroom && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
+| `Команда «python» не найдена` | Пишите `python3` вместо `python` |
 | `Ошибка ... .xml` при `plan` | Бэкап повреждён или неполный — сделайте его в Moodle заново |
 
 При любой другой ошибке пришлите разработчику последние 50 строк лога:
