@@ -307,7 +307,13 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
             # «Topic 5» и т.п.: если раздел начинается с короткой метки-заголовка — берём её как название темы
             first = acts[0] if acts else None
             ftext = html_to_text(first.intro_html) if first and first.modname == "label" else ""
-            fline = ftext.split("\n")[0].strip() if ftext else ""
+            # первая строка с буквами/цифрами, без маркеров списка («•», «-», «*»)
+            fline = ""
+            for line in (ftext.split("\n") if ftext else []):
+                line = line.strip().lstrip("•-*–—·▪►✓ ").strip()
+                if re.search(r"\w", line):
+                    fline = line
+                    break
             if fline and len(fline) <= MAX_TOPIC and not fline.startswith("["):
                 tname = fline
                 if "\n" not in ftext and not first.intro_files and not html_links(first.intro_html):
@@ -374,6 +380,13 @@ def build_plan(course: Course, include_hidden: bool = True) -> CoursePlan:
                                 f"лишние будут в отдельных материалах")
             topic.items.append(item)
         if topic.items:
+            # Classroom требует уникальные названия тем в курсе
+            used = {t.name.casefold() for t in topics}
+            base, n = topic.name, 2
+            while topic.name.casefold() in used:
+                suffix = f" ({n})"
+                topic.name = base[: MAX_TOPIC - len(suffix)] + suffix
+                n += 1
             topics.append(topic)
 
     return CoursePlan(

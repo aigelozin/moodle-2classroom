@@ -219,8 +219,24 @@ class GoogleTarget:
         return _retry(self.classroom.courses().get(id=course_id), "курс")
 
     def create_topic(self, course_id: str, name: str) -> str:
-        return _retry(self.classroom.courses().topics().create(courseId=course_id, body={"name": name}),
-                      "тема")["topicId"]
+        from googleapiclient.errors import HttpError
+        try:
+            return _retry(self.classroom.courses().topics().create(courseId=course_id, body={"name": name}),
+                          "тема")["topicId"]
+        except HttpError as e:
+            if getattr(e.resp, "status", 0) != 409:
+                raise
+        # тема с таким названием уже есть (например, создана прошлым прерванным запуском) — используем её
+        token = None
+        while True:
+            resp = _retry(self.classroom.courses().topics().list(courseId=course_id, pageToken=token,
+                                                                 pageSize=100), "список тем")
+            for t in resp.get("topic", []):
+                if t.get("name", "").strip().casefold() == name.strip().casefold():
+                    return t["topicId"]
+            token = resp.get("nextPageToken")
+            if not token:
+                raise RuntimeError(f"Classroom: тема «{name}» уже существует, но не найдена в списке тем")
 
     def create_item(self, course_id: str, topic_id: str, item: Item, materials: list[dict],
                     description: str | None = None, force_draft: bool = False) -> str:
