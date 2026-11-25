@@ -70,12 +70,13 @@ ssh user@server "mkdir -p ~/moodle-2classroom/backups"
 scp *.mbz user@server:~/moodle-2classroom/backups/
 ```
 
-Папка `backups/` и файлы `.mbz` в git не попадают.
+Папка `backups/` и файлы `.mbz` в git не попадают. Если бэкапов много — сразу кладите их
+в `inbox/` и смотрите шаг 11 (перенос партией).
 
 ## Шаг 6. Пробный прогон (без Google)
 
 ```bash
-python migrate.py plan backups/*.mbz
+python3 migrate.py plan backups/*.mbz
 ```
 
 Для каждого курса появится отчёт `out/reports/<имя>.md`. В нём видно, какие будут темы,
@@ -115,7 +116,7 @@ python migrate.py plan backups/*.mbz
 
 ```bash
 cd ~/moodle-2classroom && . .venv/bin/activate
-python migrate.py auth --manual
+python3 migrate.py auth --manual
 ```
 
 1. Скрипт покажет длинную ссылку. Откройте её в браузере на любом устройстве.
@@ -132,7 +133,7 @@ python migrate.py auth --manual
 
 > Пока приложение в режиме «Testing», Google отзывает токен примерно через 7 дней.
 > Если позже появится `invalid_grant` или `Token has been expired or revoked`, выполните:
-> `rm token.json && python migrate.py auth --manual`.
+> `rm token.json && python3 migrate.py auth --manual`.
 
 ## Шаг 9. Перенести курс
 
@@ -141,8 +142,10 @@ python migrate.py auth --manual
 ```bash
 tmux new -s migrate
 cd ~/moodle-2classroom && . .venv/bin/activate
-python migrate.py run backups/курс_110.mbz 2>&1 | tee -a out/run.log
+python3 migrate.py run backups/курс_110.mbz
 ```
+
+Весь вывод сам сохраняется в `out/logs/run-<дата-время>.log`.
 
 - Отключиться, не останавливая перенос: `Ctrl+B`, затем `D`.
 - Вернуться: `tmux attach -t migrate`.
@@ -167,7 +170,7 @@ python migrate.py run backups/курс_110.mbz 2>&1 | tee -a out/run.log
 Ссылки на все перенесённые курсы записываются в `out/courses.md`:
 
 ```bash
-python migrate.py list
+python3 migrate.py list
 ```
 
 1. Откройте ссылку из `out/courses.md` или https://classroom.google.com.
@@ -180,14 +183,88 @@ python migrate.py list
 Если нужен импорт оценок из теста: задание → удалить ссылку на форму →
 «Добавить → Google Диск» → выбрать эту форму → включить «Импорт оценок».
 
-## Шаг 11. Перенести остальные курсы
+## Шаг 11. Перенести остальные курсы партией
+
+Не нужно запускать каждый бэкап отдельно. Сложите все бэкапы в папку `inbox/`
+и запустите одну команду — курсы создадутся по очереди.
+
+**1. Загрузить бэкапы на сервер одной командой** (со своего компьютера, из папки с бэкапами):
 
 ```bash
-python migrate.py plan backups/*.mbz                          # сначала проверка
-python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
+ssh user@server "mkdir -p ~/moodle-2classroom/inbox"
+rsync -av --progress *.mbz user@server:~/moodle-2classroom/inbox/
 ```
 
-Уже перенесённые курсы пропускаются: всё созданное записано в `out/state/`.
+`rsync` докачивает оборванные файлы и не копирует повторно уже загруженные.
+Если `rsync` нет — подойдёт `scp *.mbz user@server:~/moodle-2classroom/inbox/`.
+
+**2. Проверка всей партии без Google** (секунды на курс):
+
+```bash
+python3 migrate.py plan inbox/
+```
+
+В конце — сводка: какие бэкапы разобрались, какие повреждены. Отчёты — в `out/reports/`.
+
+**3. Перенос партии** (внутри `tmux`, см. шаг 9):
+
+```bash
+python3 migrate.py batch
+```
+
+Что происходит:
+- бэкапы из `inbox/` обрабатываются по очереди, в алфавитном порядке; в выводе видно `[3/12]`;
+- перенесённый бэкап перекладывается в `inbox/done/`, так что в `inbox/` остаётся только то,
+  что ещё не перенесено;
+- ошибка в одном курсе не останавливает остальные; курсы с ошибкой в конце партии
+  повторяются ещё раз (`--retries 2` — два повтора, `--retries 0` — без повторов);
+- повреждённые бэкапы не повторяются и остаются в `inbox/` — их нужно скачать из Moodle заново;
+- уже перенесённые курсы пропускаются, даже если бэкап переименовали или переложили в другую папку;
+- весь вывод автоматически пишется в `out/logs/batch-<дата-время>.log` (`| tee` не нужен);
+- в конце — сводка по каждому бэкапу и обновлённый `out/courses.md` со ссылками.
+
+Пример сводки:
+
+```
+============================================================
+Итог (batch): ✓ перенесён: 10, • пропущен: 1, ✗ повреждён: 1
+  ✓ перенесён  c001_Курс_йоги_000.mbz
+  ...
+  ✗ повреждён  c050_Курс_йоги_116.mbz
+               бэкап повреждён или это не .mbz — скачайте его из Moodle заново
+```
+
+Добавили новые бэкапы в `inbox/` — просто запустите `python3 migrate.py batch` снова.
+
+Опции `batch`:
+
+| Опция | Что делает |
+|---|---|
+| `python3 migrate.py batch другая/папка` | брать бэкапы не из `inbox/`, а из указанной папки |
+| `--keep` | не перекладывать готовые бэкапы в `done/` |
+| `--retries N` | сколько раз повторять курсы с ошибкой (по умолчанию 1) |
+| `--recheck` | не пропускать перенесённые курсы, а проверить их заново (дублей не будет) |
+| `--skip-hidden`, `--private-forms` | как у `run` |
+
+`run` тоже принимает папку и несколько файлов (`python3 migrate.py run backups/`), но не
+перекладывает бэкапы в `done/` и не повторяет упавшие.
+
+### Сделать бэкапы в Moodle пачкой (если есть доступ к серверу Moodle)
+
+Вместо скачивания по одному через интерфейс — на сервере Moodle, из его папки:
+
+```bash
+mkdir -p /tmp/mbz
+for id in 2 3 5 7 84; do        # id курсов: видны в адресе course/view.php?id=…
+  sudo -u www-data php admin/cli/backup.php --courseid=$id --destination=/tmp/mbz
+done
+```
+
+Затем перенесите `/tmp/mbz/*.mbz` в `inbox/` сервера переноса (`rsync`, как выше).
+Пользователь веб-сервера может называться иначе (`apache`, `nginx`). Бэкап делается
+с настройками резервного копирования по умолчанию — проверьте в Moodle: «Администрирование →
+Курсы → Резервное копирование → Общие настройки резервного копирования», что включены
+файлы и банк вопросов.
 
 ## Если что-то пошло не так
 
@@ -207,11 +284,11 @@ python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
 | `Нет credentials.json` | Шаг 7, пункты 4–5 |
 | `access_denied` при входе | Добавьте свой Gmail в Test users (шаг 7, п. 3) |
 | `... API has not been used in project ... or it is disabled` | Включите это API (шаг 7, п. 2), подождите 2–3 минуты |
-| `invalid_grant`, `Token has been expired or revoked` | `rm token.json && python migrate.py auth --manual` |
+| `invalid_grant`, `Token has been expired or revoked` | `rm token.json && python3 migrate.py auth --manual` |
 | `Mismatching state` / `Missing code` при вставке адреса | Скопирован не весь адрес — начните `auth --manual` заново и скопируйте адрес целиком |
 | `HTTP 429` или `Quota exceeded` | Скрипт сам повторяет запросы; если всё равно упал — подождите час и запустите `run` снова |
 | `HTTP 403 ... @ClassroomApiDisabled` | Откройте https://classroom.google.com этим Gmail, выберите роль «Я преподаватель», затем повторите |
-| `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
+| `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python3 migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
 | `! Classroom отклонил «…» — ищу проблемное вложение` | Не ошибка: скрипт сам найдёт вложение, которое Google не принимает (часто — недоступное или приватное видео), и вставит его ссылкой в текст материала. Список таких мест — в `out/courses.md`, раздел «Замечания» |
 | `✗ «…»: … — пропущен` | Элемент не создался, остальные перенесены. Запустите `run` ещё раз; если повторяется — пришлите строку разработчику |
 | `ModuleNotFoundError: No module named 'google'` / `googleapiclient` | Не установлены зависимости: `cd ~/moodle-2classroom && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
@@ -219,7 +296,7 @@ python migrate.py run  backups/*.mbz 2>&1 | tee -a out/run.log
 | `Ошибка ... .xml` при `plan` | Бэкап повреждён или неполный — сделайте его в Moodle заново |
 
 При любой другой ошибке пришлите разработчику последние 50 строк лога:
-`tail -50 out/run.log`.
+`tail -50 "$(ls -t out/logs/*.log | head -1)"`.
 
 ## Обновление проекта
 

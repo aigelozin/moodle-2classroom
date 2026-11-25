@@ -43,7 +43,7 @@ pip install -r requirements.txt
 ## 3. Проверка без Google
 
 ```bash
-python migrate.py plan /path/to/backups/*.mbz
+python3 migrate.py plan /path/to/backups/*.mbz
 ```
 
 Смотрите `out/reports/*.md`: что станет темами, материалами, тестами, что пропущено.
@@ -53,7 +53,7 @@ python migrate.py plan /path/to/backups/*.mbz
 Проще всего на сервере без браузера:
 
 ```bash
-python migrate.py auth --manual
+python3 migrate.py auth --manual
 ```
 
 Откройте показанную ссылку на любом устройстве, войдите и разрешите доступ. Браузер затем
@@ -64,7 +64,7 @@ python migrate.py auth --manual
 
 ```bash
 ssh -L 8765:localhost:8765 user@server
-python migrate.py auth
+python3 migrate.py auth
 ```
 
 Откройте показанную ссылку в браузере на своём компьютере, войдите тем Gmail, который будет
@@ -72,9 +72,22 @@ python migrate.py auth
 
 ## 5. Перенос
 
+Один курс:
+
 ```bash
-python migrate.py run /path/to/backups/*.mbz
+python3 migrate.py run backups/курс.mbz
 ```
+
+Много курсов партией — сложите бэкапы в папку `inbox/` и запустите:
+
+```bash
+python3 migrate.py batch
+```
+
+Курсы создаются по очереди; перенесённые бэкапы перекладываются в `inbox/done/`,
+курсы с ошибкой повторяются в конце, повреждённые бэкапы остаются в `inbox/`.
+Уже перенесённое пропускается, даже если бэкап переименован или переложен.
+Вывод пишется в `out/logs/`. Подробно — в [install2server.md](install2server.md), шаг 11.
 
 Ход переноса записывается в `out/state/`. Если что-то оборвалось (лимиты API, сеть),
 просто запустите ту же команду ещё раз: уже созданное не будет создано повторно.
@@ -83,7 +96,7 @@ python migrate.py run /path/to/backups/*.mbz
 Файлы ложатся в Google Drive в папку `Moodle → Classroom/<курс>`.
 
 Ссылки на все перенесённые курсы (Classroom и папка в Drive) собираются в `out/courses.md` —
-файл обновляется после каждого `run`. Показать его: `python migrate.py list`.
+файл обновляется после каждого `run`. Показать его: `python3 migrate.py list`.
 
 Тесты публикуются и открываются по ссылке всем (`--private-forms` — не открывать).
 API Classroom не умеет прикреплять форму как «тест» (только ссылкой), поэтому импорт оценок
