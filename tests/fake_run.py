@@ -33,6 +33,19 @@ class Fake(gt.GoogleTarget):
         calls.append(("form", spec.title, len(spec.requests)))
         json.dump(spec.requests, open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "m2c_form_requests.json"), "w"), ensure_ascii=False, indent=1)
         return {"id": self._id("form"), "url": "https://docs.google.com/forms/d/e/x/viewform"}
+    # --- Диск / реестр
+    alive = set()
+    def file_alive(self, fid): return fid in Fake.alive or str(fid).startswith(("folder", "file", "sheet"))
+    def move_into(self, fid, parent): calls.append(("move", fid, parent))
+    def trash_if_empty(self, fid): calls.append(("trash", fid)); return True
+    def upload_large(self, path, name, mime, folder, log=print):
+        assert os.path.exists(path); calls.append(("backup", name, folder)); return self._id("file")
+    def upsert_spreadsheet(self, xlsx, name, folder, sheet_id):
+        open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "m2c_registry.xlsx"), "wb").write(xlsx)
+        calls.append(("sheet", "update" if sheet_id else "create", folder)); return sheet_id or self._id("sheet")
+    def get_course(self, cid):
+        return {"id": cid, "name": f"Курс {cid}", "alternateLink": f"https://classroom.google.com/c/{cid}",
+                "enrollmentCode": "abc12de", "courseState": "ACTIVE"}
     def create_course(self, plan): calls.append(("course", plan.name)); return "C1"
     def create_topic(self, cid, name): calls.append(("topic", name)); return self._id("topic")
     def create_item(self, cid, tid, item, materials):

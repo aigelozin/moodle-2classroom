@@ -114,6 +114,25 @@ def _retry(call, what: str, tries: int = 6):
             raise
 
 
+def _retry_chunk(req, tries: int = 6):
+    """next_chunk() с повторами при обрывах — продолжает загрузку с места остановки."""
+    from googleapiclient.errors import HttpError
+    net = _network_errors()
+    for attempt in range(tries):
+        try:
+            return req.next_chunk()
+        except HttpError as e:
+            if getattr(e.resp, "status", 0) in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                time.sleep(min(60, 2 ** attempt + random.random()))
+                continue
+            raise
+        except net:
+            if attempt < tries - 1:
+                time.sleep(min(60, 5 * 2 ** attempt + random.random()))
+                continue
+            raise
+
+
 def _authorized_http(creds):
     import google_auth_httplib2
     import httplib2
@@ -168,6 +187,73 @@ class GoogleTarget:
         body = {"name": name, "parents": [folder], "mimeType": "application/vnd.google-apps.document"}
         return _retry(self.drive.files().create(body=body, media_body=media, fields="id"),
                       f"документ {name}")["id"]
+
+    def upload_large(self, path: str, name: str, mimetype: str, folder: str, log=print) -> str:
+        """Загрузка большого файла (бэкап) кусками с прогрессом."""
+        from googleapiclient.http import MediaFileUpload
+        media = MediaFileUpload(path, mimetype=mimetype, resumable=True, chunksize=16 * 1024 * 1024)
+        req = self.drive.files().create(body={"name": name, "parents": [folder]}, media_body=media, fields="id")
+        size = os.path.getsize(path)
+        resp, last = None, -1
+        while resp is None:
+            status, resp = _retry_chunk(req)
+            if status and size > 50_000_000:
+                pct = int(status.progress() * 100)
+                if pct // 20 != last // 20:
+                    log(f"      … {pct}%")
+                    last = pct
+        return resp["id"]
+
+    def file_alive(self, file_id: str) -> bool:
+        """Файл существует и не в корзине (пользователь мог удалить его вручную)."""
+        from googleapiclient.errors import HttpError
+        try:
+            meta = _retry(self.drive.files().get(fileId=file_id, fields="id,trashed"), "проверка файла")
+            return not meta.get("trashed")
+        except HttpError as e:
+            if getattr(e.resp, "status", 0) == 404:
+                return False
+            raise
+
+    def move_into(self, file_id: str, new_parent: str):
+        meta = _retry(self.drive.files().get(fileId=file_id, fields="parents"), "папка")
+        parents = meta.get("parents", [])
+        if parents == [new_parent]:
+            return
+        _retry(self.drive.files().update(fileId=file_id, addParents=new_parent,
+                                         removeParents=",".join(p for p in parents if p != new_parent),
+                                         fields="id"), "перенос папки")
+
+    def trash_if_empty(self, folder_id: str) -> bool:
+        resp = _retry(self.drive.files().list(q=f"'{folder_id}' in parents and trashed = false",
+                                              fields="files(id)", pageSize=1), "содержимое папки")
+        if resp.get("files"):
+            return False
+        _retry(self.drive.files().update(fileId=folder_id, body={"trashed": True}, fields="id"),
+               "удаление пустой папки")
+        return True
+
+    def upsert_spreadsheet(self, xlsx: bytes, name: str, folder: str, sheet_id: str | None) -> str:
+        """Создаёт или обновляет Google Таблицу из .xlsx (Drive сам конвертирует)."""
+        from googleapiclient.http import MediaInMemoryUpload
+        xmime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        media = MediaInMemoryUpload(xlsx, mimetype=xmime, resumable=False)
+        if sheet_id and self.file_alive(sheet_id):
+            _retry(self.drive.files().update(fileId=sheet_id, body={"name": name},
+                                             media_body=media, fields="id"), "обновление таблицы")
+            return sheet_id
+        body = {"name": name, "parents": [folder], "mimeType": "application/vnd.google-apps.spreadsheet"}
+        return _retry(self.drive.files().create(body=body, media_body=media, fields="id"),
+                      "создание таблицы")["id"]
+
+    def get_course(self, course_id: str) -> dict | None:
+        from googleapiclient.errors import HttpError
+        try:
+            return _retry(self.classroom.courses().get(id=course_id), "курс")
+        except HttpError as e:
+            if getattr(e.resp, "status", 0) == 404:
+                return None
+            raise
 
     # ------------------------------------------------------------ forms
     def create_form(self, spec, folder: str) -> dict:
@@ -390,7 +476,10 @@ def _short(e) -> str:
 
 
 def run_plan(plan: CoursePlan, target: GoogleTarget, state: State, log=print,
-             existing_course: str | None = None):
+             existing_course: str | None = None, root_folder: str | None = None):
+    # одна общая папка «Moodle → Classroom» на все курсы (root_folder из out/global.json)
+    if root_folder and not state.get("drive:root"):
+        state.set("drive:root", root_folder)
     root = target.ensure_folder(ROOT_FOLDER, None, state, "drive:root")
     folder = target.ensure_folder(plan.name[:200], root, state, "drive:course")
 

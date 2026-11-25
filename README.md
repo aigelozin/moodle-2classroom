@@ -95,6 +95,11 @@ python3 migrate.py batch
 
 Файлы ложатся в Google Drive в папку `Moodle → Classroom/<курс>`.
 
+На Диске владельца курсов ведётся Google Таблица **«Курсы Moodle → Classroom»**: название
+курса, ссылка, код для записи, состояние, ссылка на бэкап (бэкапы загружаются в
+`Moodle → Classroom/Бэкапы Moodle`). Обновляется после каждого переноса; вручную —
+`python3 migrate.py sheet`. Подробно — [install2server.md](install2server.md), шаг 12.
+
 Ссылки на все перенесённые курсы (Classroom и папка в Drive) собираются в `out/courses.md` —
 файл обновляется после каждого `run`. Показать его: `python3 migrate.py list`.
 

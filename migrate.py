@@ -6,6 +6,7 @@
   python3 migrate.py run   backups/*.mbz          # перенос (можно перезапускать — продолжит)
   python3 migrate.py batch                        # перенести все бэкапы из inbox/ по очереди,
                                                   # готовые переложить в inbox/done/
+  python3 migrate.py sheet                        # Google Таблица курсов + бэкапы на Диске владельца
   python3 migrate.py list                         # ссылки на перенесённые курсы (out/courses.md)
 
 Вместо файлов можно указывать папки — берутся все .mbz внутри.
@@ -134,7 +135,7 @@ def start_log(out_dir: str, command: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["plan", "auth", "run", "batch", "list"])
+    ap.add_argument("command", choices=["plan", "auth", "run", "batch", "sheet", "list"])
     ap.add_argument("mbz", nargs="*", help=".mbz файлы или папки с ними (для batch по умолчанию inbox/)")
     ap.add_argument("--out", default="out", help="папка для отчётов и state (по умолчанию ./out)")
     ap.add_argument("--credentials", default="credentials.json", help="OAuth-клиент (Desktop app)")
@@ -149,6 +150,8 @@ def main():
     ap.add_argument("--retries", type=int, default=1,
                     help="batch: сколько раз повторить курсы, упавшие с ошибкой (по умолчанию 1)")
     ap.add_argument("--keep", action="store_true", help="batch: не перекладывать готовые бэкапы в done/")
+    ap.add_argument("--no-sheet", action="store_true",
+                    help="run/batch: не обновлять Google Таблицу и не загружать бэкапы на Диск")
     ap.add_argument("--skip-hidden", action="store_true", help="не переносить скрытое в Moodle")
     ap.add_argument("--private-forms", action="store_true",
                     help="не открывать тесты по ссылке для всех (доступ настроите сами)")
@@ -169,14 +172,30 @@ def main():
     if a.command in ("run", "batch"):
         print(f"Лог: {start_log(a.out, a.command)}")
 
+    if a.command in ("run", "batch", "sheet") and not a.no_sheet:
+        try:
+            import openpyxl  # noqa: F401
+        except ImportError:
+            print("Для Google Таблицы нужна библиотека openpyxl. Установите зависимости:\n"
+                  "  .venv/bin/pip install -r requirements.txt\n"
+                  "(или запустите с --no-sheet, чтобы пропустить таблицу)")
+            sys.exit(2)
+
     target = None
-    if a.command in ("auth", "run", "batch"):
+    if a.command in ("auth", "run", "batch", "sheet"):
         from google_target import GoogleTarget, get_credentials
         creds = get_credentials(a.credentials, a.token, a.port, manual=a.manual)
         if a.command == "auth":
             print(f"Готово, токен сохранён в {a.token}")
             return
         target = GoogleTarget(creds, publish_forms_to_anyone=not a.private_forms)
+
+    if a.command == "sheet":
+        from registry import sync_registry
+        url = sync_registry(a.out, target, state_path, a.mbz)
+        write_courses_index(a.out)
+        print(f"\nGoogle Таблица: {url}")
+        return
 
     if not a.mbz:
         ap.error("укажите .mbz файлы или папку с ними")
@@ -202,6 +221,12 @@ def main():
     if a.course and len(files) != 1:
         ap.error("--course можно указать только для одного .mbz")
 
+    if target:
+        from registry import resolve_root
+        a.root_folder = resolve_root(a.out, target)
+    else:
+        a.root_folder = None
+
     results: dict[str, tuple[str, str]] = {}   # файл -> (статус, подробности)
     queue = list(files)
     for attempt in range(1 + (a.retries if a.command == "batch" else 0)):
@@ -219,9 +244,19 @@ def main():
         if not queue:
             break
 
+    sheet_url = None
+    if target and not a.no_sheet:
+        try:
+            from registry import sync_registry
+            # файлы в inbox/ уже могли переехать в done/ — передаём исходные папки
+            sheet_url = sync_registry(a.out, target, state_path, a.mbz)
+        except Exception as e:
+            print(f"  ! таблицу обновить не удалось: {e} — повторите: python3 migrate.py sheet")
     if target:
         print(f"\nСсылки на курсы: {write_courses_index(a.out)}")
     print_summary(results, a.command)
+    if sheet_url:
+        print(f"\nGoogle Таблица курсов: {sheet_url}")
     states = [s for s, _ in results.values()]
     if "error" in states:
         print("\nКурсы с ошибками остались на месте — запустите ту же команду ещё раз, перенос продолжится.")
@@ -280,7 +315,7 @@ def process_one(mbz: str, i: int, n: int, a, target) -> tuple[str, str]:
         from google_target import State, run_plan
         st = State(state_path(a.out, mbz))
         st.set("source_file", os.path.basename(mbz))
-        cid = run_plan(plan, target, st, existing_course=a.course)
+        cid = run_plan(plan, target, st, existing_course=a.course, root_folder=a.root_folder)
         url = f"https://classroom.google.com/c/{_alias(cid)}"
         print(f"  ✓ перенесено: {url}  (id {cid})")
         return "done", f"{plan.name} — {url}"
@@ -361,6 +396,8 @@ def write_courses_index(out_dir: str) -> str:
     text = "\n".join([
         "# Курсы, перенесённые в Google Classroom", "",
         f"Обновлено: {now}", "",
+        *([f"Google Таблица: https://docs.google.com/spreadsheets/d/{_sheet_id(out_dir)}", ""]
+          if _sheet_id(out_dir) else []),
         "| Курс | Classroom | Google Drive | Статус | State-файл |",
         "|---|---|---|---|---|",
         *rows, "",
@@ -380,6 +417,15 @@ def write_courses_index(out_dir: str) -> str:
     with open(path, "w") as fh:
         fh.write(text)
     return path
+
+
+def _sheet_id(out_dir: str):
+    import json
+    p = os.path.join(out_dir, "global.json")
+    try:
+        return json.load(open(p)).get("sheet_id") if os.path.exists(p) else None
+    except Exception:
+        return None
 
 
 def _alias(course_id: str) -> str:
