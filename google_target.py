@@ -78,6 +78,16 @@ def _network_errors():
     return tuple(errs)
 
 
+class CourseQuotaExhausted(Exception):
+    """Google исчерпал суточный лимит создания курсов для этого аккаунта."""
+
+
+def _is_hard_quota(e) -> bool:
+    """Лимиты аккаунта (а не временная перегрузка): повторять бессмысленно до следующего дня."""
+    text = str(getattr(e, "content", b"") or b"")+str(e)
+    return "QuotaExhausted" in text or "RateLimitReached" in text
+
+
 def _retry(call, what: str, tries: int = 6):
     from googleapiclient.errors import HttpError
     net = _network_errors()
@@ -86,6 +96,8 @@ def _retry(call, what: str, tries: int = 6):
             return call.execute()
         except HttpError as e:
             status = getattr(e.resp, "status", 0)
+            if _is_hard_quota(e):
+                raise                      # суточный лимит аккаунта: повторы не помогут
             if status in (429, 500, 502, 503, 504) and attempt < tries - 1:
                 delay = min(60, 2 ** attempt + random.random())
                 print(f"    … {what}: HTTP {status}, повтор через {delay:.0f} с")
@@ -204,6 +216,10 @@ class GoogleTarget:
                 return cid
             except HttpError as e:
                 last = e
+                if "UserCourseCreationQuotaExhausted" in str(e):
+                    raise CourseQuotaExhausted(
+                        "Google: исчерпан суточный лимит создания курсов для этого аккаунта "
+                        "(у личного Gmail — 30 курсов в сутки)") from e
                 if "coursestatedenied" not in str(e).lower():
                     raise
         raise SystemExit(

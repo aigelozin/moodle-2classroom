@@ -227,16 +227,38 @@ def main():
         print("\nКурсы с ошибками остались на месте — запустите ту же команду ещё раз, перенос продолжится.")
     if "broken" in states:
         print("\nПовреждённые бэкапы: скачайте их из Moodle заново и положите на место старых.")
+    if "quota" in states:
+        print(f"\n⏸ Отложено курсов: {states.count('quota')}. Google разрешает личному аккаунту создавать "
+              "не больше 30 курсов в сутки.\n   Бэкапы остались в inbox/ — запустите ту же команду завтра "
+              "(или настройте автозапуск раз в сутки, см. install2server.md).")
     if "error" in states or "broken" in states:
         sys.exit(1)
+    if "quota" in states:
+        sys.exit(3)
+
+
+QUOTA_HIT = False   # Google сообщил о суточном лимите создания курсов
+
+
+def has_course(out_dir: str, mbz: str) -> bool:
+    import json
+    p = state_path(out_dir, mbz)
+    try:
+        return bool(os.path.exists(p) and json.load(open(p)).get("course_id"))
+    except Exception:
+        return False
 
 
 def process_one(mbz: str, i: int, n: int, a, target) -> tuple[str, str]:
     """Один бэкап: разбор, отчёт и (если есть target) перенос. Возвращает (статус, подробности)."""
+    global QUOTA_HIT
     print(f"\n=== [{i}/{n}] {os.path.basename(mbz)}")
     if target and not a.recheck and not a.course and is_done(a.out, mbz):
         print("  уже перенесён — пропускаю (--recheck, чтобы проверить заново)")
         return "skipped", "уже перенесён"
+    if target and QUOTA_HIT and not a.course and not has_course(a.out, mbz):
+        print("  отложен: суточный лимит Google на создание курсов уже исчерпан")
+        return "quota", "лимит создания курсов"
     course = None
     try:
         try:
@@ -264,16 +286,26 @@ def process_one(mbz: str, i: int, n: int, a, target) -> tuple[str, str]:
         return "done", f"{plan.name} — {url}"
     except KeyboardInterrupt:
         raise
+    except Exception as e:
+        from google_target import CourseQuotaExhausted
+        if not isinstance(e, CourseQuotaExhausted):
+            return _generic_error(e)
+        QUOTA_HIT = True
+        print(f"  ⏸ {e}. Курс отложен — остальные новые курсы тоже будут отложены, "
+              "а начатые раньше продолжат переноситься.")
+        return "quota", str(e)
     except SystemExit as e:   # понятные ошибки из google_target (например, CourseStateDenied)
         print(f"  ✗ {e}")
         return "error", str(e).split("\n")[0]
-    except Exception as e:
-        print(f"  ✗ ошибка: {e}")
-        traceback.print_exc()
-        return "error", str(e).split("\n")[0][:200]
     finally:
         if course:
             cleanup(course)
+
+
+def _generic_error(e) -> tuple[str, str]:
+    print(f"  ✗ ошибка: {e}")
+    traceback.print_exception(type(e), e, e.__traceback__)
+    return "error", str(e).split("\n")[0][:200]
 
 
 def move_to_done(mbz: str):
@@ -290,7 +322,7 @@ def move_to_done(mbz: str):
 
 def print_summary(results: dict, command: str):
     labels = {"done": "✓ перенесён", "skipped": "• пропущен", "planned": "• разобран", "error": "✗ ошибка",
-              "broken": "✗ повреждён"}
+              "broken": "✗ повреждён", "quota": "⏸ отложен"}
     print("\n" + "=" * 60)
     print(f"Итог ({command}): " + ", ".join(
         f"{labels[k]}: {sum(1 for s, _ in results.values() if s == k)}"

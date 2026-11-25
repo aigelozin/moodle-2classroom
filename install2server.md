@@ -249,6 +249,35 @@ python3 migrate.py batch
 `run` тоже принимает папку и несколько файлов (`python3 migrate.py run backups/`), но не
 перекладывает бэкапы в `done/` и не повторяет упавшие.
 
+### Лимит Google: 30 новых курсов в сутки
+
+Личный Gmail может создавать **не больше 30 курсов в сутки** (ограничение Google, его нельзя
+обойти из скрипта). Когда лимит исчерпан, `batch`:
+- не создаёт новые курсы и помечает их в сводке как `⏸ отложен` — бэкапы остаются в `inbox/`;
+- продолжает переносить курсы, которые уже были созданы раньше (начатые);
+- завершается с кодом 3 и подсказкой запустить ещё раз завтра.
+
+Если бэкапов больше 30 — проще всего поставить автозапуск раз в сутки: каждую ночь
+будет переноситься очередная партия, пока `inbox/` не опустеет.
+
+```bash
+crontab -e
+```
+
+Добавьте строку (запуск каждый день в 03:15; `flock` не даёт запустить второй перенос,
+пока не закончился первый):
+
+```
+15 3 * * * cd $HOME/moodle-2classroom && flock -n /tmp/moodle2classroom.lock python3 migrate.py batch >/dev/null 2>&1
+```
+
+Логи каждого ночного запуска — в `out/logs/`, ссылки — в `out/courses.md`.
+Когда `inbox/` опустеет, удалите строку из `crontab -e`.
+
+> Для автозапуска переведите приложение Google Cloud в режим **In production**
+> (Google Auth Platform → Audience → Publish app). В режиме «Testing» Google сбрасывает
+> вход через 7 дней, и ночные запуски начнут падать с `invalid_grant`.
+
 ### Сделать бэкапы в Moodle пачкой (если есть доступ к серверу Moodle)
 
 Вместо скачивания по одному через интерфейс — на сервере Moodle, из его папки:
@@ -286,6 +315,7 @@ done
 | `... API has not been used in project ... or it is disabled` | Включите это API (шаг 7, п. 2), подождите 2–3 минуты |
 | `invalid_grant`, `Token has been expired or revoked` | `rm token.json && python3 migrate.py auth --manual` |
 | `Mismatching state` / `Missing code` при вставке адреса | Скопирован не весь адрес — начните `auth --manual` заново и скопируйте адрес целиком |
+| `⏸ отложен` / `@UserCourseCreationQuotaExhausted` | Суточный лимит Google: 30 новых курсов в сутки для личного Gmail. Запустите `batch` завтра или настройте автозапуск (шаг 11, «Лимит Google») |
 | `HTTP 429` или `Quota exceeded` | Скрипт сам повторяет запросы; если всё равно упал — подождите час и запустите `run` снова |
 | `HTTP 403 ... @ClassroomApiDisabled` | Откройте https://classroom.google.com этим Gmail, выберите роль «Я преподаватель», затем повторите |
 | `@CourseStateDenied This user cannot create or transition courses` | Создайте курс вручную в Classroom («+» → «Создать курс»), скопируйте его адрес из браузера и запустите: `python3 migrate.py run backups/c110.mbz --course "https://classroom.google.com/c/..."` |
