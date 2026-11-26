@@ -133,10 +133,22 @@ def _retry_chunk(req, tries: int = 6):
             raise
 
 
+def _build_http():
+    import httplib2
+    http = httplib2.Http(timeout=HTTP_TIMEOUT)
+    # Google отвечает 308 «Resume Incomplete» на каждую часть загрузки по частям (Drive).
+    # httplib2 по умолчанию считает 308 перенаправлением и падает с RedirectMissingLocation —
+    # так же, как это делает сам googleapiclient (build_http), исключаем 308.
+    try:
+        http.redirect_codes = http.redirect_codes - {308}
+    except AttributeError:
+        pass
+    return http
+
+
 def _authorized_http(creds):
     import google_auth_httplib2
-    import httplib2
-    return google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=HTTP_TIMEOUT))
+    return google_auth_httplib2.AuthorizedHttp(creds, http=_build_http())
 
 
 class State:

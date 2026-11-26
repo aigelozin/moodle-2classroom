@@ -112,7 +112,8 @@ def resolve_root(out_dir: str, target, log=print) -> str:
     return root
 
 
-def upload_backups(files: list[str], out_dir: str, target, state_path, folder: str, log=print):
+def upload_backups(files: list[str], out_dir: str, target, state_path, folder: str, log=print) -> list[str]:
+    failed: list[str] = []
     for mbz in sorted(files, key=lambda p: _natural(os.path.basename(p))):
         st = State(state_path(out_dir, mbz))
         if not st.get("course_name"):
@@ -125,8 +126,14 @@ def upload_backups(files: list[str], out_dir: str, target, state_path, folder: s
             continue
         size_mb = os.path.getsize(mbz) / 1e6
         log(f"  загружаю бэкап {os.path.basename(mbz)} ({size_mb:.0f} МБ)")
-        fid = target.upload_large(mbz, os.path.basename(mbz), "application/vnd.moodle.backup", folder, log)
+        try:
+            fid = target.upload_large(mbz, os.path.basename(mbz), "application/vnd.moodle.backup", folder, log)
+        except Exception as e:  # таблица всё равно будет создана; бэкап загрузится при следующем запуске
+            log(f"    ! не загрузился: {type(e).__name__}: {str(e)[:150]} — повторится при следующем sheet")
+            failed.append(os.path.basename(mbz))
+            continue
         st.set("backup_file_id", fid)
+    return failed
 
 
 def collect_rows(out_dir: str, target, log=print) -> list[dict]:
@@ -241,10 +248,12 @@ def sync_registry(out_dir: str, target, state_path, extra_paths: list[str] = (),
         gstate.set("drive:backups", None)
         backups_folder = target.ensure_folder(BACKUPS_FOLDER, root, gstate, "drive:backups")
     files = find_backups(list(extra_paths))
-    upload_backups(files, out_dir, target, state_path, backups_folder, log)
+    failed = upload_backups(files, out_dir, target, state_path, backups_folder, log)
     rows = collect_rows(out_dir, target, log)
     sheet_id = target.upsert_spreadsheet(build_xlsx(rows), SHEET_NAME, root, gstate.get("sheet_id"))
     gstate.set("sheet_id", sheet_id)
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
     log(f"  таблица ({len(rows)} строк): {url}")
+    if failed:
+        log(f"  ! не загрузилось бэкапов: {len(failed)} — запустите python3 migrate.py sheet ещё раз")
     return url
